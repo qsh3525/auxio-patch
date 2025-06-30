@@ -1,0 +1,80 @@
+name: Patch, Rename, and Sign APK
+
+on:
+  push:
+    paths:
+      - 'input/**'
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y openjdk-17-jdk wget unzip zip apksigner
+
+    - name: Download apktool
+      run: |
+        wget https://bitbucket.org/iBotPeaches/apktool/downloads/apktool_2.9.3.jar -O apktool.jar
+        wget https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool
+        chmod +x apktool
+        sudo mv apktool /usr/local/bin/
+        sudo mv apktool.jar /usr/local/bin/
+
+    - name: Prepare input APK
+      run: |
+        mkdir output
+        cd input
+        APK=$(ls *.apk | head -n 1)
+        cp "$APK" ../original.apk
+        cd ..
+
+    - name: Decompile APK
+      run: |
+        apktool d original.apk -o unpacked -f
+
+    - name: Patch and Rename Package
+      run: |
+        OLD_PACKAGE="org.oxycblt.auxio"
+        NEW_PACKAGE="com.kugou.android"
+
+        # Remove problematic attribute
+        sed -i '/allowCrossUidActivitySwitchFromBelow/d' unpacked/AndroidManifest.xml
+
+        # Change package name in manifest
+        sed -i "s/package=\"$OLD_PACKAGE\"/package=\"$NEW_PACKAGE\"/" unpacked/AndroidManifest.xml
+
+        # Replace package in smali files
+        find unpacked/ -type f -name "*.smali" -exec sed -i "s/${OLD_PACKAGE//./\\.}/${NEW_PACKAGE//./\\.}/g" {} +
+
+        # Move smali directory
+        OLDPATH=unpacked/smali/$(echo $OLD_PACKAGE | tr '.' '/')
+        NEWPATH=unpacked/smali/$(echo $NEW_PACKAGE | tr '.' '/')
+        mkdir -p "$(dirname $NEWPATH)"
+        mv "$OLDPATH" "$NEWPATH"
+
+    - name: Rebuild APK
+      run: |
+        apktool b unpacked -o output/auxio-fixed-unsigned.apk
+
+    - name: Sign APK
+      run: |
+        keytool -genkey -noprompt -v -keystore my-release-key.jks \
+          -storepass password -keypass password -alias my-alias \
+          -keyalg RSA -keysize 2048 -validity 10000 \
+          -dname "CN=APK, OU=Signer, O=Github, L=None, S=None, C=US"
+
+        apksigner sign --ks my-release-key.jks --ks-pass pass:password \
+          --key-pass pass:password \
+          --out output/auxio-fixed-signed.apk output/auxio-fixed-unsigned.apk
+
+    - name: Upload Final APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: auxio-fixed-signed
+        path: output/auxio-fixed-signed.apk
